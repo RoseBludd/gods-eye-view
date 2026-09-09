@@ -7784,6 +7784,16 @@ export default defineConfig(({ mode }) => {
         'Content-Security-Policy': "frame-ancestors 'none'",
       },
     },
+    preview: {
+      // `vite preview` serves the same API middlewares (configurePreviewServer)
+      // but does NOT inherit server.allowedHosts. This fork is deployed behind
+      // proxy hostnames (public OSINT dashboard), so allow any Host. Framing
+      // protection is unaffected — it lives in the X-Frame-Options/CSP headers
+      // above, which apply to every response this server emits.
+      host: env.HOST || 'localhost',
+      port: parseInt(env.PORT, 10) || 4173,
+      allowedHosts: true,
+    },
     // Expose selected API keys to the browser via import.meta.env.*
     define: {
       'import.meta.env.GOOGLE_MAPS_API_KEY': JSON.stringify(env.GOOGLE_MAPS_API_KEY),
