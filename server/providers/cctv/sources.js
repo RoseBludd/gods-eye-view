@@ -65,6 +65,11 @@ import {
   DEFAULT_VEGVESEN_MAX_SOURCES,
   VEGVESEN_MAX_CATALOG_BYTES,
   NORWAY_ANCHORS,
+  WINDY_WEBCAMS_URL,
+  WINDY_IMAGE_ORIGIN,
+  DEFAULT_WINDY_MAX_SOURCES,
+  WINDY_PAGE_SIZE,
+  WINDY_MAX_PAGES,
 } from './constants.js';
 import {
   toFiniteNumber,
@@ -1860,6 +1865,161 @@ export async function loadVegvesenSourcesFromOpenData() {
       '[CCTV] Vegvesen camera download error:',
       error?.message || error,
     );
+    return [];
+  }
+}
+
+/**
+ * One Windy Webcams v3 record -> one catalog source, or null.
+ *
+ * Windy publishes no camera facing, so headings use the shared id-hash
+ * fallback at low confidence, like Calgary and Fintraffic. Only stills on
+ * the official `images.windy.com` CDN origin are accepted; everything else
+ * is dropped so the proxy can pin the host.
+ *
+ * @param {object} webcam - One `webcams[]` row from the Windy v3 payload.
+ * @returns {?object}
+ */
+export function windyWebcamToSource(webcam) {
+  if (!webcam || typeof webcam !== 'object') return null;
+  if (String(webcam?.status || '').toLowerCase() !== 'active') return null;
+
+  const lat = toFiniteNumber(webcam?.location?.latitude);
+  const lon = toFiniteNumber(webcam?.location?.longitude);
+  if (!isPlausibleLatLon(lat, lon)) return null;
+
+  const candidates = [
+    webcam?.images?.current?.webcam,
+    webcam?.images?.current?.preview,
+    webcam?.images?.daylight?.webcam,
+    webcam?.images?.daylight?.preview,
+  ];
+  let imageUrl = '';
+  for (const raw of candidates) {
+    if (typeof raw !== 'string' || !raw) continue;
+    try {
+      const parsed = new URL(raw);
+      if (
+        parsed.origin === WINDY_IMAGE_ORIGIN &&
+        parsed.protocol === 'https:' &&
+        !parsed.username &&
+        !parsed.password
+      ) {
+        imageUrl = parsed.href;
+        break;
+      }
+    } catch {
+      // Malformed URL -> try the next candidate.
+    }
+  }
+  if (!imageUrl) return null;
+
+  const id = String(webcam?.webcamId || '').trim();
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) return null;
+  const cameraId = `windy-${id.toLowerCase()}`;
+
+  const title = String(webcam?.title || '').trim();
+  const city = String(webcam?.location?.city || '').trim();
+  const country = String(webcam?.location?.country || '').trim();
+  const region = String(webcam?.location?.region || '').trim();
+  const place = region || country || 'Worldwide';
+  const cityLabel = city ? `${city}, ${place}` : place;
+
+  return {
+    id: cameraId,
+    name: title || `Windy webcam ${id}`,
+    city: cityLabel,
+    cityId: `windy-${place.toLowerCase().replace(/\s+/g, '-')}`,
+    provider: 'Windy Webcams',
+    lat,
+    lon,
+    headingDeg: fallbackHeadingFromId(cameraId),
+    headingConfidence: 'low',
+    pitchDeg: -18,
+    fovDeg: 44,
+    rangeM: 145,
+    mountHeightM: 8,
+    // Unknown elevation worldwide; the client's ground snap owns placement.
+    groundElevationM: 10,
+    feedType: 'image',
+    url: imageUrl,
+    snapshotUrl: imageUrl,
+    sourceKind: 'windy-webcams',
+    license: 'Windy Webcams API (attribution required)',
+  };
+}
+
+/**
+ * Fetch the Windy Webcams global catalogue (BYOK: requires WINDY_API_KEY).
+ *
+ * Pages the v3 API (`limit` <= 50) until the source cap or the page budget
+ * is reached, ranks by view count (popularity tracks live/interesting
+ * cameras), then caps. Without a key the pack is silently absent — the same
+ * BYOK semantics as TomTom traffic.
+ *
+ * @returns {Promise<Array<object>>} Normalized camera source objects.
+ */
+export async function loadWindySourcesFromApi() {
+  const apiKey = String(process.env.WINDY_API_KEY || '').trim();
+  if (!apiKey) {
+    console.warn(
+      '[CCTV] Windy Webcams disabled: no WINDY_API_KEY (add one at windy.com/apps — the key setup panel lists it)',
+    );
+    return [];
+  }
+
+  try {
+    const seen = new Map();
+    for (let page = 0; page < WINDY_MAX_PAGES; page += 1) {
+      const url = new URL(WINDY_WEBCAMS_URL);
+      url.searchParams.set('limit', String(WINDY_PAGE_SIZE));
+      url.searchParams.set('offset', String(page * WINDY_PAGE_SIZE));
+      url.searchParams.set('include', 'location,images');
+      const resp = await fetch(url, {
+        headers: {
+          'x-windy-api-key': apiKey,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
+        redirect: 'error',
+      });
+      if (!resp.ok) {
+        console.warn('[CCTV] Windy source download failed:', resp.status);
+        break;
+      }
+      const payload = await readResponseJsonCapped(resp, 2 * 1024 * 1024);
+      const rows = Array.isArray(payload?.webcams) ? payload.webcams : [];
+      if (!rows.length) break;
+
+      for (const row of rows) {
+        const source = windyWebcamToSource(row);
+        // Rank input lives on the raw row (popularity ≈ live/interesting);
+        // the catalog normalization drops unknown fields, so keep it here.
+        if (source) seen.set(source.id, { source, viewCount: toFiniteNumber(row?.viewCount) || 0 });
+      }
+
+      const total = Number(payload?.total);
+      if (Number.isFinite(total) && seen.size >= total) break;
+      if (rows.length < WINDY_PAGE_SIZE) break;
+    }
+    if (!seen.size) return [];
+
+    const maxRaw = Number(
+      process.env.CCTV_WINDY_MAX_SOURCES || DEFAULT_WINDY_MAX_SOURCES,
+    );
+    const maxCount = Number.isFinite(maxRaw)
+      ? Math.max(8, Math.min(1000, Math.floor(maxRaw)))
+      : DEFAULT_WINDY_MAX_SOURCES;
+    const ranked = [...seen.values()]
+      .sort((a, b) => b.viewCount - a.viewCount)
+      .slice(0, maxCount)
+      .map((entry) => entry.source);
+    console.log(
+      `[CCTV] Loaded Windy webcam sources: ${seen.size} active (capped to ${ranked.length})`,
+    );
+    return ranked;
+  } catch (error) {
+    console.warn('[CCTV] Windy source download error:', error?.message || error);
     return [];
   }
 }

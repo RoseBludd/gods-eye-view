@@ -299,3 +299,14 @@ export const CCTV_MEDIA_FETCH_TIMEOUT_MS = 15 * 1000;
 export const CCTV_MEDIA_IDLE_TIMEOUT_MS = 30 * 1000;
 /** Declared size ceiling for fixed media responses. */
 export const CCTV_MEDIA_MAX_BODY_BYTES = 64 * 1024 * 1024;
+
+/** Windy Webcams (BYOK): global webcam catalogue at api.windy.com. */
+export const WINDY_WEBCAMS_URL = 'https://api.windy.com/webcams/api/v3/webcams';
+/** Windy serves webcam stills from its CDN; only this host is proxied. */
+export const WINDY_IMAGE_ORIGIN = 'https://images.windy.com';
+/** Webcams pulled per load, ranked by view count (popularity ≈ live/interesting). */
+export const DEFAULT_WINDY_MAX_SOURCES = 300;
+/** Per-request page size; the Windy v3 API caps `limit` at 50. */
+export const WINDY_PAGE_SIZE = 50;
+/** Upper bound on API pages per refresh, so a huge catalogue can't spin the loop. */
+export const WINDY_MAX_PAGES = 8;

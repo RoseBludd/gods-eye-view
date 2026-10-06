@@ -83,6 +83,13 @@ export const KEY_SETUP_KEYS = Object.freeze([
     getUrl: 'https://my.tomtom.com/keys',
     envVars: Object.freeze(['TOMTOM_API_KEY']),
     tier: 'free',
+  }),  Object.freeze({
+    id: 'windy',
+    title: 'WINDY WEBCAMS',
+    unlocks: 'Global live webcam catalogue on the globe',
+    getUrl: 'https://www.windy.com/apps',
+    envVars: Object.freeze(['WINDY_API_KEY']),
+    tier: 'free',
   }),
   Object.freeze({
     id: 'cesium-ion',

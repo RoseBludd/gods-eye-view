@@ -19,6 +19,7 @@ import {
   loadCalgarySourcesFromOpenData,
   loadDelDOTSourcesFromOpenData,
   loadVegvesenSourcesFromOpenData,
+  loadWindySourcesFromApi,
 } from './sources.js';
 
 /** Env kill switch: unset or anything but "0" means enabled. */
@@ -97,6 +98,12 @@ const LIVE_PACKS = [
     name: 'vegvesen',
     enabled: () => envEnabled('CCTV_VEGVESEN_ENABLED'),
     load: loadVegvesenSourcesFromOpenData,
+  },
+  {
+    name: 'windy',
+    enabled: () =>
+      envEnabled('CCTV_WINDY_ENABLED') && Boolean(process.env.WINDY_API_KEY),
+    load: loadWindySourcesFromApi,
   },
 ];
 /**
